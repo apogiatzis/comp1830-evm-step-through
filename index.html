@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EVM Step-Through · COMP1830 Blockchain for Fintech</title>
+<meta name="description" content="Step through real EVM bytecode instruction by instruction and watch the stack, memory, storage and gas change.">
+<style>
+  @font-face { font-family: "Cooper Hewitt"; font-weight: 600; src: url("fonts/cooper-hewitt-600-normal.woff2") format("woff2"); font-display: swap; }
+  @font-face { font-family: "Cooper Hewitt"; font-weight: 700; src: url("fonts/cooper-hewitt-700-normal.woff2") format("woff2"); font-display: swap; }
+  @font-face { font-family: "Public Sans"; font-weight: 400; src: url("fonts/public-sans-400-normal.woff2") format("woff2"); font-display: swap; }
+  @font-face { font-family: "Public Sans"; font-weight: 600; src: url("fonts/public-sans-600-normal.woff2") format("woff2"); font-display: swap; }
+  @font-face { font-family: "Public Sans"; font-weight: 700; src: url("fonts/public-sans-700-normal.woff2") format("woff2"); font-display: swap; }
+
+  :root {
+    /* University of Greenwich palette */
+    --navy: #00033d; --navy-2: #5a5d80; --blue: #0058aa; --bright: #3abff0; --mint: #89e9d7;
+    --teal: #218474; --amber: #ffae00; --red: #cc4b37; --stone: #eeedee; --grey: #cbc9cc;
+    --bg: #f6f7fb; --text: #2e2e2e;
+    --heading: "Cooper Hewitt", Aptos, "Segoe UI", Arial, sans-serif;
+    --body: "Public Sans", Aptos, "Segoe UI", Arial, sans-serif;
+    --mono: Consolas, Menlo, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { font-family: var(--body); font-size: 14px; line-height: 1.45; color: var(--text); background: var(--bg); display: grid; grid-template-rows: auto 1fr; }
+  button, input, select { font: inherit; }
+
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--navy); color: #fff; border-bottom: 3px solid var(--bright); }
+  header h1 { font-family: var(--heading); font-weight: 700; font-size: 18px; margin: 0; }
+  header .sub { font-size: 12px; color: #b9bfe0; letter-spacing: .08em; text-transform: uppercase; }
+  header .spacer { flex: 1; }
+  header a { color: #fff; font-size: 12px; opacity: .8; }
+
+  main { display: grid; grid-template-columns: 330px 1fr 360px; min-height: 0; }
+  @media (max-width: 1180px) { main { grid-template-columns: 300px 1fr 330px; } }
+
+  /* ---------- Code listing ---------- */
+  #codecol { position: relative; background: #fff; border-right: 1px solid #e3e4ec; overflow-y: auto; padding: 14px 0 20px; }
+  #codecol h2 { padding: 0 16px; }
+  .code { font-family: var(--mono); font-size: 12.5px; }
+  .code .region { padding: 10px 16px 4px; font-family: var(--body); font-size: 11.5px; color: var(--navy-2); font-weight: 600; border-top: 1px solid #f0f0f5; }
+  .code .region:first-child { border-top: 0; padding-top: 0; }
+  .code .region small { display: block; font-weight: 400; }
+  .code .ins { display: grid; grid-template-columns: 38px 1fr auto; gap: 8px; padding: 2px 16px; border-left: 3px solid transparent; }
+  .code .ins .off { color: #9a9cb3; }
+  .code .ins .mn { color: var(--navy); font-weight: 600; }
+  .code .ins .mn i { font-style: normal; font-weight: 400; color: var(--blue); }
+  .code .ins .hx { color: #9a9cb3; font-size: 11px; }
+  .code .ins.data .mn, .code .ins.data .hx { color: #b9bbcb; font-weight: 400; }
+  .code .ins.done { background: #f6f8fc; }
+  .code .ins.cur { background: #e6f1fb; border-left-color: var(--blue); }
+  .code .ins.cur .mn { color: var(--blue); }
+  .code .ins.fail { background: #fbe9e6; border-left-color: var(--red); }
+
+  /* ---------- Stage ---------- */
+  #stage { position: relative; min-height: 420px; overflow: hidden; }
+  #stage canvas { display: block; }
+  #labels { position: absolute; inset: 0; pointer-events: none; }
+  .status {
+    position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+    background: rgba(255,255,255,.95); border: 1px solid #e3e4ec; border-radius: 999px;
+    padding: 6px 16px; font-size: 13px; font-weight: 600; color: var(--navy); white-space: nowrap;
+    box-shadow: 0 2px 10px rgba(0,3,61,.06);
+  }
+  .status.ok { border-color: var(--teal); color: var(--teal); }
+  .status.bad { border-color: var(--red); color: var(--red); }
+  .pcbox {
+    position: absolute; left: 14px; bottom: 14px;
+    background: rgba(255,255,255,.95); border: 1px solid #e3e4ec; border-radius: 8px; padding: 8px 12px;
+    font-size: 12px; color: var(--navy-2);
+  }
+  .pcbox b { font-family: var(--mono); color: var(--navy); font-size: 13px; }
+  .glabel { font-family: var(--heading); font-weight: 700; font-size: 13px; color: var(--navy); text-align: center; white-space: nowrap; }
+  .glabel small { display: block; font-family: var(--body); font-weight: 400; font-size: 11px; color: var(--navy-2); }
+  .slab { font-family: var(--mono); font-size: 11.5px; color: #fff; text-align: center; white-space: nowrap; line-height: 1.15; text-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  .slab small { display: block; font-size: 10px; opacity: .85; }
+  .cell { font-family: var(--mono); font-size: 10.5px; color: var(--navy); text-align: center; white-space: nowrap; background: rgba(255,255,255,.92); border-radius: 4px; padding: 1px 5px; line-height: 1.25; }
+  .cell small { display: block; color: var(--navy-2); font-size: 9.5px; }
+  .empty { font-size: 11.5px; color: #9a9cb3; font-style: italic; white-space: nowrap; }
+
+  /* ---------- Panel ---------- */
+  aside { background: #fff; border-left: 1px solid #e3e4ec; overflow-y: auto; padding: 14px 18px 28px; }
+  section { padding: 12px 0; border-bottom: 1px solid #ececf2; }
+  section:first-child { padding-top: 0; }
+  section:last-child { border-bottom: 0; }
+  h2 { font-family: var(--heading); font-weight: 700; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--navy); margin: 0 0 10px; }
+  select { width: 100%; border: 1px solid #d6d8e4; border-radius: 6px; padding: 6px 8px; background: #fff; color: var(--navy); }
+  .desc { font-size: 12.5px; color: var(--navy-2); margin: 8px 0 0; }
+  .field { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 13px; }
+  .field label { flex: 1; color: var(--navy-2); }
+  .field input[type=number] { width: 120px; border: 1px solid #d6d8e4; border-radius: 6px; padding: 4px 8px; font-family: var(--mono); color: var(--navy); }
+  .field input[type=range] { flex: 1; accent-color: var(--blue); }
+  .btns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .btn { border: 1px solid #d6d8e4; background: #fff; color: var(--navy); padding: 7px 12px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px; }
+  .btn:hover { border-color: var(--blue); color: var(--blue); }
+  .btn.primary { background: var(--navy); border-color: var(--navy); color: #fff; }
+  .btn.primary:hover { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .now { background: #f2f7fd; border-left: 3px solid var(--blue); border-radius: 0 6px 6px 0; padding: 10px 12px; }
+  .now .op { font-family: var(--mono); font-weight: 700; color: var(--navy); font-size: 14px; }
+  .now .op span { color: var(--navy-2); font-weight: 400; font-size: 12px; }
+  .now p { margin: 6px 0 0; font-size: 13px; }
+  .now .cost { font-family: var(--mono); font-size: 12px; color: var(--blue); margin-top: 6px; }
+  .gasbar { height: 12px; background: var(--stone); border-radius: 6px; overflow: hidden; margin: 6px 0 6px; }
+  .gasbar div { height: 100%; background: var(--teal); width: 100%; transition: width .25s ease; }
+  .gasbar.low div { background: var(--amber); }
+  .gasbar.out div { background: var(--red); }
+  .kv { display: flex; justify-content: space-between; font-size: 12.5px; margin-top: 3px; }
+  .kv b { font-family: var(--mono); color: var(--navy); font-weight: 600; }
+  .result { border-radius: 6px; padding: 10px 12px; font-size: 13px; }
+  .result.ok { background: #e9f8f4; border-left: 3px solid var(--teal); }
+  .result.bad { background: #fbe9e6; border-left: 3px solid var(--red); }
+  .result.idle { background: var(--bg); color: var(--navy-2); }
+  .result h3 { margin: 0 0 4px; font-family: var(--heading); font-size: 14px; color: var(--navy); }
+  .result table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+  .result td { padding: 2px 0; }
+  .result td:last-child { text-align: right; font-family: var(--mono); }
+  .result .tbl-title { margin: 10px 0 0; font-size: 11.5px; font-weight: 600; color: var(--navy-2); text-transform: uppercase; letter-spacing: .05em; }
+  .result tr.total td { border-top: 1px solid rgba(0,0,0,.15); font-weight: 700; padding-top: 4px; }
+  details { font-size: 12.5px; color: var(--navy-2); }
+  details summary { cursor: pointer; font-weight: 600; color: var(--navy); }
+  details ul { padding-left: 18px; margin: 8px 0 0; }
+  details li { margin-bottom: 4px; }
+  .foot { font-size: 11px; color: var(--navy-2); margin-top: 14px; }
+  .nogl { position: absolute; inset: 0; display: grid; place-items: center; color: var(--navy-2); padding: 20px; text-align: center; }
+  @media (max-width: 960px) {
+    html, body { height: auto; }
+    main { grid-template-columns: 1fr; }
+    #stage { height: 56vh; order: 1; }
+    #codecol { order: 2; max-height: 50vh; }
+    aside { order: 3; }
+    .glabel { font-size: 11px; } .glabel small { display: none; }
+    .slab { font-size: 10px; } .slab small { display: none; }
+    .cell { font-size: 9.5px; padding: 0 3px; }
+    .status { font-size: 12px; padding: 4px 12px; }
+  }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="sub">COMP1830 · Blockchain for Fintech · Lab 2</div>
+    <h1>EVM Step-Through</h1>
+  </div>
+  <div class="spacer"></div>
+  <a href="#about" id="about-link">About this tool</a>
+</header>
+
+<main>
+  <div id="codecol">
+    <h2>Bytecode</h2>
+    <div class="code" id="code"></div>
+  </div>
+
+  <div id="stage">
+    <div id="labels"></div>
+    <div class="status" id="status">Ready</div>
+    <div class="pcbox">Program counter <b id="pc">0x00</b> · Step <b id="stepno">0</b></div>
+  </div>
+
+  <aside>
+    <section>
+      <h2>Program</h2>
+      <select id="preset" aria-label="Program"></select>
+      <p class="desc" id="preset-desc"></p>
+      <div class="field"><label for="value">ETH sent with the transaction (wei)</label><input type="number" id="value" min="0" step="1" value="0"></div>
+      <div class="field"><label for="gaslimit">Gas available for execution</label><input type="number" id="gaslimit" min="0" step="100" value="100000"></div>
+    </section>
+
+    <section>
+      <h2>Run</h2>
+      <div class="btns">
+        <button class="btn" id="b-back" title="Undo the last instruction (←)">◀ Back</button>
+        <button class="btn primary" id="b-step" title="Execute one instruction (→)">Step ▶</button>
+        <button class="btn" id="b-run" title="Run to the end (Space)">Run</button>
+        <button class="btn" id="b-reset">Reset</button>
+      </div>
+      <div class="field"><label for="speed">Run speed</label><input type="range" id="speed" min="1" max="20" value="4"></div>
+    </section>
+
+    <section>
+      <h2>Current instruction</h2>
+      <div class="now" id="now"></div>
+    </section>
+
+    <section>
+      <h2>Gas</h2>
+      <div class="gasbar" id="gasbar"><div></div></div>
+      <div class="kv"><span>Used by execution</span><b id="g-used">0</b></div>
+      <div class="kv"><span>Remaining</span><b id="g-left">0</b></div>
+    </section>
+
+    <section>
+      <h2>Result</h2>
+      <div class="result idle" id="result">Step through the program to see what happens.</div>
+    </section>
+
+    <section id="about">
+      <details>
+        <summary>About this tool</summary>
+        <p>The default program is the exact bytecode from the lab sheet: the Solidity compiler’s output for <code>contract MyContract { uint i = 10 + 2 * 2; }</code>. Running it is what happens when the contract is <b>deployed</b>: the <i>constructor code</i> runs once and returns the <i>runtime code</i> that is stored in the new contract account.</p>
+        <ul>
+          <li><b>Stack:</b> up to 1024 items of 32 bytes; most instructions take their inputs from the top of the stack and push their result back.</li>
+          <li><b>Memory:</b> a temporary byte array, empty at the start of each call and expanded (for a gas fee) as it is used.</li>
+          <li><b>Storage:</b> the contract’s permanent key → value store. Writing a new value costs far more gas than anything else, because every node must keep it forever.</li>
+          <li><b>REVERT</b> and <b>running out of gas</b> undo every storage change; running out of gas also uses up all the gas provided.</li>
+        </ul>
+        <p>This is a small teaching interpreter that implements only the instructions these programs use, with current (post-Berlin) gas costs. The transaction-cost breakdown also includes the fixed costs that every contract-creation transaction pays.</p>
+      </details>
+      <p class="foot">University of Greenwich · COMP1830 Blockchain for Fintech · Educational tool.</p>
+    </section>
+  </aside>
+</main>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+// ===================================================================== Programs
+const hex = s => Uint8Array.from(s.replace(/\s+/g, '').match(/../g).map(b => parseInt(b, 16)));
+// The lab sheet's contract: constructor (init) code followed by runtime code and compiler metadata.
+const LAB_INIT = '6080604052600e600055348015601457600080fd5b5060358060226000396000f3fe';
+const LAB_RUNTIME = '6080604052600080fdfe' + 'a165627a7a72305820' + '3d25b6cf35a18f6827ac943141cfd6d0fa521b85a4677fada153cc03d77140b3' + '0029';
+
+const LAB_REGIONS = [
+  { from: 0x00, title: 'Constructor code (runs once, at deployment)', note: 'Set up the free memory pointer: memory[0x40] = 0x80' },
+  { from: 0x05, title: 'uint i = 10 + 2 * 2', note: 'The compiler already worked out 14 (0x0E); store it in storage slot 0' },
+  { from: 0x0a, title: 'Reject any ETH sent', note: 'The constructor is not payable: if CALLVALUE ≠ 0, REVERT' },
+  { from: 0x14, title: 'Return the runtime code', note: 'Copy the 0x35 bytes at offset 0x22 into memory and return them' },
+  { from: 0x21, title: 'Separator', note: 'INVALID marks the end of the constructor' },
+  { from: 0x22, title: 'Runtime code (stored in the contract account)', note: 'Copied by CODECOPY, not executed during deployment', data: true },
+  { from: 0x2c, title: 'Compiler metadata (bzzr0 Swarm hash)', note: 'Data, not code: a disassembler shows it as meaningless opcodes', data: true },
+];
+
+const PRESETS = {
+  deploy: {
+    label: 'Lab contract: deploy', code: LAB_INIT + LAB_RUNTIME, value: 0, gas: 100000, deploy: true, regions: LAB_REGIONS,
+    desc: 'The exact bytecode from the lab sheet. Step through the deployment: watch the free memory pointer, the SSTORE of 14 and the runtime code being returned.' },
+  payable: {
+    label: 'Lab contract: deploy sending 1 wei', code: LAB_INIT + LAB_RUNTIME, value: 1, gas: 100000, deploy: true, regions: LAB_REGIONS,
+    desc: 'Same deployment, but the transaction sends 1 wei. Which instructions react to this, and what happens to the value stored in slot 0?' },
+  outofgas: {
+    label: 'Lab contract: not enough gas', code: LAB_INIT + LAB_RUNTIME, value: 0, gas: 20000, deploy: true, regions: LAB_REGIONS,
+    desc: 'Only 20,000 gas is available for execution. Which instruction cannot be paid for, and what happens to the work done so far?' },
+  loop: {
+    label: 'Infinite loop', code: '6000' + '5b' + '600101' + '600256', value: 0, gas: 1000,
+    regions: [
+      { from: 0x00, title: 'counter = 0', note: 'Push 0 onto the stack' },
+      { from: 0x02, title: 'loop: counter = counter + 1', note: 'JUMPDEST marks a valid jump target' },
+      { from: 0x06, title: 'jump back to loop', note: 'There is no exit condition…' },
+    ],
+    desc: 'A loop with no exit condition. Press Run. What stops it, and how many times does it go round with 1,000 gas?' },
+  arith: {
+    label: 'Arithmetic at run time', code: '6002' + '6002' + '02' + '600a' + '01' + '6000' + '55' + '00', value: 0, gas: 100000,
+    regions: [
+      { from: 0x00, title: '2 * 2', note: 'Push both operands, then MUL' },
+      { from: 0x05, title: '10 + (2 * 2)', note: 'Push 10, then ADD' },
+      { from: 0x08, title: 'store the result in slot 0', note: 'SSTORE(key = 0, value = 14)' },
+      { from: 0x0b, title: 'end', note: 'STOP' },
+    ],
+    desc: 'Computes 10 + 2 * 2 at run time. Compare with the lab contract, where the compiler pre-computed 14: how much extra gas does doing the maths at run time cost?' },
+  runtime: {
+    label: 'Lab contract: call the deployed contract', code: LAB_RUNTIME, value: 0, gas: 30000,
+    regions: [
+      { from: 0x00, title: 'Runtime code', note: 'This is what the contract account stores after deployment' },
+      { from: 0x05, title: 'No functions defined', note: 'Every call ends in REVERT' },
+      { from: 0x0a, title: 'Compiler metadata', note: 'Data, not code', data: true },
+    ],
+    desc: 'The code that ends up stored in the contract account. What happens when someone calls the deployed contract, and why?' },
+};
+
+// ===================================================================== Disassembler
+const NAMES = {
+  0x00: 'STOP', 0x01: 'ADD', 0x02: 'MUL', 0x03: 'SUB', 0x04: 'DIV', 0x10: 'LT', 0x11: 'GT', 0x14: 'EQ', 0x15: 'ISZERO', 0x1b: 'SHL',
+  0x20: 'KECCAK256', 0x34: 'CALLVALUE', 0x35: 'CALLDATALOAD', 0x38: 'CODESIZE', 0x39: 'CODECOPY', 0x3d: 'RETURNDATASIZE', 0x40: 'BLOCKHASH',
+  0x50: 'POP', 0x51: 'MLOAD', 0x52: 'MSTORE', 0x54: 'SLOAD', 0x55: 'SSTORE', 0x56: 'JUMP', 0x57: 'JUMPI', 0x5b: 'JUMPDEST', 0x5f: 'PUSH0',
+  0xf3: 'RETURN', 0xfd: 'REVERT', 0xfe: 'INVALID',
+};
+for (let i = 1; i <= 32; i++) NAMES[0x5f + i] = 'PUSH' + i;
+for (let i = 1; i <= 16; i++) { NAMES[0x7f + i] = 'DUP' + i; NAMES[0x8f + i] = 'SWAP' + i; }
+for (let i = 0; i <= 4; i++) NAMES[0xa0 + i] = 'LOG' + i;
+
+function disassemble(code) {
+  const out = [];
+  for (let pc = 0; pc < code.length;) {
+    const op = code[pc];
+    const n = op >= 0x60 && op <= 0x7f ? op - 0x5f : 0;
+    const imm = n ? code.slice(pc + 1, pc + 1 + n) : null;
+    out.push({ pc, op, name: NAMES[op] || `0x${op.toString(16).padStart(2, '0')}`, imm, size: 1 + n });
+    pc += 1 + n;
+  }
+  return out;
+}
+
+// ===================================================================== Teaching EVM
+const MASK = (1n << 256n) - 1n;
+const toHex = (v, pad = 0) => '0x' + v.toString(16).toUpperCase().padStart(pad, '0');
+const bytesToBig = b => b.reduce((a, x) => (a << 8n) | BigInt(x), 0n);
+const memWordsCost = w => 3 * w + Math.floor(w * w / 512);
+const GAS_BASE = { STOP: 0, ADD: 3, MUL: 5, SUB: 3, DIV: 5, LT: 3, GT: 3, EQ: 3, ISZERO: 3, SHL: 3, CALLVALUE: 2, CALLDATALOAD: 3, CODESIZE: 2,
+  CODECOPY: 3, POP: 2, MLOAD: 3, MSTORE: 3, JUMP: 8, JUMPI: 10, JUMPDEST: 1, PUSH0: 2, RETURN: 0, REVERT: 0, SLOAD: 0, SSTORE: 0 };
+
+class Halt extends Error { constructor(kind, msg) { super(msg); this.kind = kind; } }
+
+function newMachine(p) {
+  const code = hex(p.code);
+  const jumpdests = new Set(disassemble(code).filter(i => i.op === 0x5b).map(i => i.pc));
+  return { code, jumpdests, pc: 0, stack: [], memory: [], storage: new Map(), initialStorage: new Map(), original: new Map(), warm: new Set(),
+           gasLimit: p.gasLimitOverride ?? p.gas, gasLeft: p.gasLimitOverride ?? p.gas, value: BigInt(p.valueOverride ?? p.value),
+           steps: 0, halted: null, returnData: null, loops: 0, last: null };
+}
+const clone = m => ({ ...m, stack: m.stack.slice(), memory: m.memory.slice(), storage: new Map(m.storage), warm: new Set(m.warm) });
+
+function step(m) {
+  if (m.halted) return m;
+  const s = clone(m);
+  const op = s.code[s.pc] ?? 0x00;
+  const name = NAMES[op] || `0x${op.toString(16)}`;
+  const info = { pc: s.pc, op, name, gas: 0, text: '', changed: {} };
+  const pop = () => { if (!s.stack.length) throw new Halt('error', 'Stack underflow'); return s.stack.pop(); };
+  const push = v => { if (s.stack.length >= 1024) throw new Halt('error', 'Stack overflow (1024 items)'); s.stack.push(v & MASK); };
+  const charge = g => { info.gas += g; if (s.gasLeft < g) { s.gasLeft = 0; throw new Halt('oog', `Out of gas: ${name} needs ${info.gas.toLocaleString()} gas`); } s.gasLeft -= g; };
+  const expand = (off, size) => {
+    if (size === 0) return 0;
+    const need = Math.ceil((off + size) / 32), have = Math.ceil(s.memory.length / 32);
+    if (need > have) { const c = memWordsCost(need) - memWordsCost(have); charge(c); while (s.memory.length < need * 32) s.memory.push(0); return c; }
+    return 0;
+  };
+  let next = s.pc + 1;
+  try {
+    if (op >= 0x60 && op <= 0x7f) {
+      const n = op - 0x5f; const v = bytesToBig(Array.from(s.code.slice(s.pc + 1, s.pc + 1 + n)).concat(Array(Math.max(0, s.pc + 1 + n - s.code.length)).fill(0)));
+      charge(3); push(v); next = s.pc + 1 + n;
+      info.name = `PUSH${n}`; info.imm = v;
+      info.text = `Push the value ${toHex(v)} (${v}) onto the top of the stack.`;
+    } else if (op >= 0x80 && op <= 0x8f) {
+      const n = op - 0x7f; charge(3);
+      if (s.stack.length < n) throw new Halt('error', 'Stack underflow');
+      const v = s.stack[s.stack.length - n]; push(v);
+      info.text = n === 1 ? `Duplicate the top stack item (${toHex(v)}).` : `Copy stack item ${n} (${toHex(v)}) to the top.`;
+    } else if (op >= 0x90 && op <= 0x9f) {
+      const n = op - 0x8f; charge(3);
+      if (s.stack.length < n + 1) throw new Halt('error', 'Stack underflow');
+      const L = s.stack.length; [s.stack[L - 1], s.stack[L - 1 - n]] = [s.stack[L - 1 - n], s.stack[L - 1]];
+      info.text = `Swap the top stack item with item ${n + 1}.`;
+    } else switch (name) {
+      case 'STOP': charge(0); throw new Halt('stop', 'Execution stopped (STOP)');
+      case 'ADD': { charge(3); const a = pop(), b = pop(); push(a + b); info.text = `Pop ${a} and ${b}, push their sum ${(a + b) & MASK}.`; break; }
+      case 'MUL': { charge(5); const a = pop(), b = pop(); push(a * b); info.text = `Pop ${a} and ${b}, push their product ${(a * b) & MASK}.`; break; }
+      case 'SUB': { charge(3); const a = pop(), b = pop(); push(a - b + (1n << 256n)); info.text = `Pop ${a} and ${b}, push ${a} − ${b}.`; break; }
+      case 'DIV': { charge(5); const a = pop(), b = pop(); push(b === 0n ? 0n : a / b); info.text = `Pop ${a} and ${b}, push ${a} ÷ ${b} (0 if dividing by 0).`; break; }
+      case 'LT': { charge(3); const a = pop(), b = pop(); push(a < b ? 1n : 0n); info.text = `Is ${a} < ${b}? Push 1 for yes, 0 for no.`; break; }
+      case 'GT': { charge(3); const a = pop(), b = pop(); push(a > b ? 1n : 0n); info.text = `Is ${a} > ${b}? Push 1 for yes, 0 for no.`; break; }
+      case 'EQ': { charge(3); const a = pop(), b = pop(); push(a === b ? 1n : 0n); info.text = `Is ${a} = ${b}? Push 1 for yes, 0 for no.`; break; }
+      case 'ISZERO': { charge(3); const a = pop(); push(a === 0n ? 1n : 0n); info.text = `Is the top item (${a}) zero? Push ${a === 0n ? 1 : 0}.`; break; }
+      case 'CALLVALUE': charge(2); push(s.value); info.text = `Push the amount of ETH sent with this transaction: ${s.value} wei.`; break;
+      case 'CALLDATALOAD': { charge(3); pop(); push(0n); info.text = 'Load 32 bytes of input data (there is none, so push 0).'; break; }
+      case 'CODESIZE': charge(2); push(BigInt(s.code.length)); info.text = `Push the size of the running code (${s.code.length} bytes).`; break;
+      case 'POP': { charge(2); const a = pop(); info.text = `Remove the top stack item (${toHex(a)}).`; break; }
+      case 'MSTORE': {
+        charge(3); const off = Number(pop()), v = pop(); const c = expand(off, 32);
+        for (let i = 0; i < 32; i++) s.memory[off + i] = Number((v >> BigInt(8 * (31 - i))) & 0xffn);
+        info.changed.memory = [off, 32];
+        info.text = `Pop offset ${toHex(BigInt(off))} and value ${toHex(v)}; write the value as a 32-byte word at memory[${toHex(BigInt(off))}].` + (c ? ` Memory grows to ${s.memory.length} bytes (+${c} gas).` : '');
+        if (off === 0x40 && v === 0x80n) info.text += ' Solidity uses memory[0x40] as its “free memory pointer”: the next free memory starts at 0x80.';
+        break;
+      }
+      case 'MLOAD': { charge(3); const off = Number(pop()); expand(off, 32); let v = 0n; for (let i = 0; i < 32; i++) v = (v << 8n) | BigInt(s.memory[off + i]); push(v); info.text = `Read the 32-byte word at memory[${toHex(BigInt(off))}].`; break; }
+      case 'SLOAD': { const k = pop(); charge(s.warm.has(k) ? 100 : 2100); s.warm.add(k); push(s.storage.get(k) ?? 0n); info.text = `Read storage slot ${k}.`; break; }
+      case 'SSTORE': {
+        if (s.gasLeft <= 2300) { s.gasLeft = 0; throw new Halt('oog', 'Out of gas: SSTORE needs more than 2,300 gas left'); }
+        const k = pop(), v = pop(); const cur = s.storage.get(k) ?? 0n; const orig = s.original.has(k) ? s.original.get(k) : cur;
+        if (!s.original.has(k)) s.original.set(k, cur);
+        let g = s.warm.has(k) ? 0 : 2100; s.warm.add(k);
+        g += v === cur ? 100 : (cur === orig ? (orig === 0n ? 20000 : 2900) : 100);
+        charge(g);
+        s.storage.set(k, v); info.changed.storage = k;
+        info.text = `Pop key ${k} and value ${toHex(v)} (${v}); write it to permanent storage slot ${k}. ` +
+          (cur === 0n && v !== 0n ? 'Setting a slot from zero to a new value is the most expensive operation: 20,000 gas, plus 2,100 for the first (“cold”) access to the slot.' : '');
+        break;
+      }
+      case 'JUMP': { charge(8); const d = Number(pop()); if (!s.jumpdests.has(d)) throw new Halt('error', `Invalid jump destination ${toHex(BigInt(d))}`); next = d; s.loops++; info.text = `Jump to ${toHex(BigInt(d))}.`; break; }
+      case 'JUMPI': {
+        charge(10); const d = Number(pop()), c = pop();
+        if (c !== 0n) { if (!s.jumpdests.has(d)) throw new Halt('error', `Invalid jump destination ${toHex(BigInt(d))}`); next = d; info.text = `Condition is ${c} (non-zero), so jump to ${toHex(BigInt(d))}.`; }
+        else info.text = `Condition is 0, so do not jump: continue with the next instruction.`;
+        info.jumped = c !== 0n; break;
+      }
+      case 'JUMPDEST': charge(1); info.text = 'A marker for a valid jump target. Does nothing else.'; break;
+      case 'PUSH0': charge(2); push(0n); info.text = 'Push 0 onto the stack.'; break;
+      case 'CODECOPY': {
+        charge(3); const dst = Number(pop()), src = Number(pop()), len = Number(pop());
+        charge(3 * Math.ceil(len / 32)); expand(dst, len);
+        for (let i = 0; i < len; i++) s.memory[dst + i] = s.code[src + i] ?? 0;
+        info.changed.memory = [dst, len];
+        info.text = `Copy ${len} bytes of this program’s own code, starting at offset ${toHex(BigInt(src))}, into memory[${toHex(BigInt(dst))}]. This is the runtime code.`;
+        break;
+      }
+      case 'RETURN': {
+        charge(0); const off = Number(pop()), len = Number(pop()); expand(off, len);
+        s.returnData = s.memory.slice(off, off + len);
+        throw new Halt('return', `Returned ${len} bytes`);
+      }
+      case 'REVERT': {
+        charge(0); const off = Number(pop()), len = Number(pop()); expand(off, len);
+        throw new Halt('revert', 'Execution reverted (REVERT)');
+      }
+      case 'INVALID': throw new Halt('invalid', 'INVALID instruction');
+      default: throw new Halt('error', `${name} is not implemented in this teaching EVM`);
+    }
+    s.pc = next;
+  } catch (e) {
+    if (!(e instanceof Halt)) throw e;
+    s.halted = e.kind; s.haltMsg = e.message;
+    if (['revert', 'oog', 'invalid', 'error'].includes(e.kind)) {
+      s.storage = new Map(s.initialStorage); // every state change in this execution is undone
+      if (e.kind !== 'revert') s.gasLeft = 0;
+    }
+    if (!info.text) info.text = e.message;
+  }
+  s.steps++;
+  s.last = info;
+  return s;
+}
+
+const describeNext = m => {
+  if (m.halted) return null;
+  const op = m.code[m.pc] ?? 0x00;
+  const ins = disassemble(m.code).find(i => i.pc === m.pc);
+  return ins ? ins.name + (ins.imm ? ' ' + toHex(bytesToBig(Array.from(ins.imm)), ins.imm.length * 2) : '') : NAMES[op];
+};
+
+// ===================================================================== UI
+const $ = id => document.getElementById(id);
+const ui = { preset: $('preset'), desc: $('preset-desc'), value: $('value'), gaslimit: $('gaslimit'), back: $('b-back'), step: $('b-step'),
+             run: $('b-run'), reset: $('b-reset'), speed: $('speed'), code: $('code'), now: $('now'), result: $('result'), status: $('status') };
+for (const [k, p] of Object.entries(PRESETS)) { const o = document.createElement('option'); o.value = k; o.textContent = p.label; ui.preset.appendChild(o); }
+const params = new URLSearchParams(location.search);
+ui.preset.value = PRESETS[params.get('preset')] ? params.get('preset') : 'deploy';
+
+let P, M, trail = [], running = false, insRows = new Map();
+
+function buildCode() {
+  ui.code.innerHTML = '';
+  insRows.clear();
+  const list = disassemble(hex(P.code));
+  const regions = (P.regions || []).slice().sort((a, b) => a.from - b.from);
+  let ri = 0, inData = false;
+  for (const ins of list) {
+    while (ri < regions.length && regions[ri].from <= ins.pc) {
+      const r = regions[ri++]; inData = !!r.data;
+      const d = document.createElement('div'); d.className = 'region';
+      d.innerHTML = `${r.title}<small>${r.note}</small>`; ui.code.appendChild(d);
+    }
+    const row = document.createElement('div'); row.className = 'ins' + (inData ? ' data' : '');
+    const immHex = ins.imm ? toHex(bytesToBig(Array.from(ins.imm)), ins.imm.length * 2) : '';
+    const bytes = Array.from(hex(P.code).slice(ins.pc, ins.pc + ins.size)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    row.innerHTML = `<span class="off">${ins.pc.toString(16).padStart(2, '0').toUpperCase()}</span><span class="mn">${ins.name}${immHex ? ' <i>' + immHex + '</i>' : ''}</span><span class="hx">${bytes.length > 14 ? bytes.slice(0, 11) + '…' : bytes}</span>`;
+    ui.code.appendChild(row); insRows.set(ins.pc, row);
+  }
+}
+
+function load(resetInputs) {
+  setRunning(false);
+  P = PRESETS[ui.preset.value];
+  if (resetInputs) { ui.value.value = P.value; ui.gaslimit.value = P.gas; }
+  ui.desc.textContent = P.desc;
+  const cfg = { ...P, valueOverride: Math.max(0, Math.floor(+ui.value.value || 0)), gasLimitOverride: Math.max(0, Math.floor(+ui.gaslimit.value || 0)) };
+  M = newMachine(cfg);
+  trail = [];
+  buildCode();
+  render(true);
+}
+
+function setRunning(r) { running = r; ui.run.textContent = r ? 'Pause' : 'Run'; }
+
+function doStep() {
+  if (M.halted) { setRunning(false); return; }
+  trail.push(M);
+  M = step(M);
+  render();
+  if (M.halted) setRunning(false);
+}
+function doBack() {
+  if (!trail.length) return;
+  setRunning(false);
+  M = trail.pop();
+  render(true);
+}
+
+function intrinsicBreakdown() {
+  const code = M.code; const zeros = code.filter(b => b === 0).length; const nonzero = code.length - zeros;
+  const rows = [
+    ['Base transaction cost', 21000],
+    ['Contract creation', 32000],
+    [`Sending the code as data (${nonzero} non-zero × 16, ${zeros} zero × 4)`, nonzero * 16 + zeros * 4],
+    [`Init code words (${Math.ceil(code.length / 32)} × 2)`, Math.ceil(code.length / 32) * 2],
+    ['Execution (this step-through)', M.gasLimit - M.gasLeft],
+  ];
+  if (M.halted === 'return') rows.push([`Storing ${M.returnData.length} bytes of runtime code (× 200)`, M.returnData.length * 200]);
+  return rows;
+}
+
+// Scroll only the code panel (never the page) so the current instruction stays visible.
+function scrollCodeTo(row, instant) {
+  const col = $('codecol');
+  const top = row.offsetTop - col.offsetTop, bottom = top + row.offsetHeight;
+  if (top < col.scrollTop + 40 || bottom > col.scrollTop + col.clientHeight - 40)
+    col.scrollTo({ top: Math.max(0, top - col.clientHeight / 2), behavior: instant ? 'auto' : 'smooth' });
+}
+
+function render(instant = false) {
+  // code listing
+  insRows.forEach(r => r.classList.remove('cur', 'done', 'fail'));
+  for (const h of [...trail, M]) if (h.last) insRows.get(h.last.pc)?.classList.add('done');
+  const curRow = M.halted ? insRows.get(M.last?.pc) : insRows.get(M.pc);
+  if (curRow) { curRow.classList.add(M.halted && M.halted !== 'return' && M.halted !== 'stop' ? 'fail' : 'cur'); scrollCodeTo(curRow, instant); }
+  // current instruction card
+  const L = M.last;
+  const nextName = describeNext(M);
+  ui.now.innerHTML = (L ? `<div class="op">${L.name}${L.imm !== undefined ? ' ' + toHex(L.imm) : ''} <span>at ${toHex(BigInt(L.pc), 2)} · just executed</span></div><p>${L.text}</p><div class="cost">Gas: ${L.gas.toLocaleString()}</div>`
+    : '<p>Nothing executed yet.</p>') + (nextName ? `<p style="color:var(--navy-2)">Next: <b style="font-family:var(--mono)">${nextName}</b></p>` : '');
+  // gas
+  const used = M.gasLimit - M.gasLeft, frac = M.gasLimit ? M.gasLeft / M.gasLimit : 0;
+  const bar = $('gasbar'); bar.firstElementChild.style.width = (frac * 100) + '%';
+  bar.className = 'gasbar' + (M.halted === 'oog' ? ' out' : frac < .25 ? ' low' : '');
+  $('g-used').textContent = used.toLocaleString();
+  $('g-left').textContent = M.gasLeft.toLocaleString();
+  $('pc').textContent = toHex(BigInt(M.pc), 2);
+  $('stepno').textContent = M.steps;
+  // status + result
+  const st = ui.status;
+  if (!M.halted) { st.className = 'status'; st.textContent = M.steps ? 'Running…' : 'Ready: press Step'; ui.result.className = 'result idle'; ui.result.textContent = 'Step through the program to see what happens.'; }
+  else {
+    const ok = M.halted === 'return' || M.halted === 'stop';
+    st.className = 'status ' + (ok ? 'ok' : 'bad'); st.textContent = M.haltMsg;
+    let html = '';
+    if (M.halted === 'return' && P.deploy) {
+      html = `<h3>Contract deployed</h3>The constructor finished and returned <b>${M.returnData.length} bytes</b> of runtime code. That code is now stored in the new contract account, and storage slot 0 holds <b>${M.storage.get(0n) ?? 0}</b>.`;
+    } else if (M.halted === 'return') {
+      html = `<h3>Returned ${M.returnData.length} bytes</h3>Execution finished successfully.`;
+    } else if (M.halted === 'stop') {
+      const v = M.storage.get(0n);
+      html = `<h3>Finished (STOP)</h3>Execution ended successfully${v !== undefined ? `. Storage slot 0 = <b>${v}</b>` : ''}.`;
+    } else if (M.halted === 'revert') {
+      html = `<h3>Reverted</h3>${P.deploy ? 'Deployment failed: no contract was created and every' : 'Every'} storage change was undone. The ${M.gasLeft.toLocaleString()} gas not yet used is refunded to the sender.`;
+    } else if (M.halted === 'oog') {
+      html = `<h3>Out of gas</h3>${M.haltMsg}. Every change was undone ${P.deploy ? '(no contract was created) ' : ''}and <b>all ${M.gasLimit.toLocaleString()} gas is consumed</b>: the sender still pays for the work done.` + (M.loops ? ` The loop ran <b>${M.loops}</b> times.` : '');
+    } else {
+      html = `<h3>Execution failed</h3>${M.haltMsg}. Every change was undone and all gas is consumed.`;
+    }
+    if (P.deploy) {
+      const rows = intrinsicBreakdown(); const total = rows.reduce((a, r) => a + r[1], 0);
+      html += `<p class="tbl-title">Gas paid by the deployment transaction</p><table>${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1].toLocaleString()}</td></tr>`).join('')}<tr class="total"><td>Total</td><td>${total.toLocaleString()}</td></tr></table>`;
+    }
+    ui.result.className = 'result ' + (ok ? 'ok' : 'bad');
+    ui.result.innerHTML = html;
+  }
+  ui.back.disabled = !trail.length;
+  ui.step.disabled = !!M.halted;
+  ui.run.disabled = !!M.halted;
+  syncScene(instant);
+}
+
+// ===================================================================== Scene
+const stage = $('stage');
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ antialias: true }); }
+catch (e) { stage.insertAdjacentHTML('beforeend', '<div class="nogl">Your browser could not start WebGL, so the 3D view is unavailable. The code listing and panel still work.</div>'); }
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#eceef5');
+scene.fog = new THREE.Fog('#eceef5', 45, 110);
+const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 200);
+const labelRenderer = new CSS2DRenderer({ element: $('labels') });
+let controls;
+const TARGET = new THREE.Vector3(0, 1.6, -1.2);
+const CAM = new THREE.Vector3(0, 8.2, 16.5);
+if (renderer) {
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  stage.prepend(renderer.domElement);
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.copy(TARGET); controls.enableDamping = true; controls.enablePan = false;
+  controls.minDistance = 10; controls.maxDistance = 70; controls.maxPolarAngle = 1.45;
+  controls.minAzimuthAngle = -0.9; controls.maxAzimuthAngle = 0.9;
+}
+scene.add(new THREE.HemisphereLight('#ffffff', '#c9cde0', 1.4));
+const sun = new THREE.DirectionalLight('#ffffff', 1.7); sun.position.set(5, 14, 10); sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024); Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 14, bottom: -6 });
+scene.add(sun);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshStandardMaterial({ color: '#eceef5', roughness: 1 }));
+floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+
+function label(html, cls, pos, parent = scene) {
+  const d = document.createElement('div'); d.className = cls; d.innerHTML = html;
+  const o = new CSS2DObject(d); o.position.copy(pos); parent.add(o); return o;
+}
+function pad(x, z, w, d, color) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.12, d), new THREE.MeshStandardMaterial({ color, roughness: .9 }));
+  m.position.set(x, 0.06, z); m.receiveShadow = true; scene.add(m); return m;
+}
+
+// --- Stack (left)
+const STACK_X = -6.0, SLAB_H = 0.62, SLAB_GAP = 0.08;
+pad(STACK_X, 0, 4.2, 2.6, '#dfe3ef');
+label('Stack<small>last in, first out · max 1024 items</small>', 'glabel', new THREE.Vector3(STACK_X, -0.2, 2.1));
+const stackEmpty = label('empty', 'empty', new THREE.Vector3(STACK_X, 0.5, 0));
+const slabGeo = new THREE.BoxGeometry(3.4, SLAB_H, 1.8);
+let slabs = []; // { mesh, label, value, y, targetY, dying }
+
+// --- Memory (centre)
+const MEM_X = 0, MEM_Z = -3.6, CELL_W = 1.9, CELL_GAP = 0.15;
+const memPad = pad(MEM_X, MEM_Z, 8.6, 2.6, '#dfe3ef');
+label('Memory<small>temporary · 32-byte words</small>', 'glabel', new THREE.Vector3(MEM_X, -0.2, MEM_Z + 2.1));
+const memEmpty = label('empty', 'empty', new THREE.Vector3(MEM_X, 0.5, MEM_Z));
+const cellGeo = new THREE.BoxGeometry(CELL_W, 0.9, 1.5);
+let cells = []; // index -> { mesh, label }
+
+// --- Storage (right)
+const STO_X = 6.0;
+pad(STO_X, 0, 4.0, 2.6, '#d6eee8');
+label('Storage<small>permanent · slot → value</small>', 'glabel', new THREE.Vector3(STO_X, -0.2, 2.1));
+const stoEmpty = label('empty', 'empty', new THREE.Vector3(STO_X, 0.5, 0));
+let vaults = new Map(); // key -> { mesh, label, value }
+
+const effects = [];
+let now = 0;
+
+function wordLabel(bytes) {
+  const nz = bytes.findIndex(b => b !== 0);
+  if (nz < 0) return '0x00';
+  const h = bytes.slice(nz).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+  if (nz >= 26) return '0x' + h;               // a small number: show it in full
+  const full = bytes.map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+  return '0x' + full.slice(0, 8) + '…';
+}
+
+function syncScene(instant) {
+  // ---- stack: keep the common bottom part, animate the rest
+  const cur = M.stack;
+  let k = 0;
+  while (k < slabs.length && k < cur.length && !slabs[k].dying && slabs[k].value === cur[k]) k++;
+  for (let i = slabs.length - 1; i >= k; i--) {
+    const s = slabs[i]; if (s.dying) continue;
+    s.dying = now; s.label.element.style.opacity = 0;
+  }
+  slabs = slabs.slice(0, k).concat(slabs.slice(k).filter(s => s.dying));
+  const alive = () => slabs.filter(s => !s.dying);
+  for (let i = k; i < cur.length; i++) {
+    const v = cur[i];
+    const mat = new THREE.MeshStandardMaterial({ color: '#0058aa', roughness: .45, transparent: true });
+    const mesh = new THREE.Mesh(slabGeo, mat); mesh.castShadow = true;
+    const y = 0.12 + SLAB_H / 2 + i * (SLAB_H + SLAB_GAP);
+    mesh.position.set(STACK_X, instant ? y : y + 3, 0);
+    scene.add(mesh);
+    const lb = label(`${toHex(v).length > 14 ? toHex(v).slice(0, 12) + '…' : toHex(v)}<small>${v > 999999999n ? '' : v.toString()}</small>`, 'slab', new THREE.Vector3(0, 0, 0.91), mesh);
+    slabs.push({ mesh, label: lb, value: v, targetY: y });
+  }
+  alive().forEach((s, i, arr) => {
+    s.mesh.material.color.set(i === arr.length - 1 ? '#00033d' : '#0058aa');
+    s.targetY = 0.12 + SLAB_H / 2 + i * (SLAB_H + SLAB_GAP);
+  });
+  stackEmpty.visible = !cur.length;
+
+  // ---- memory: one cell per 32-byte word
+  const words = Math.ceil(M.memory.length / 32);
+  while (cells.length > words) { const c = cells.pop(); scene.remove(c.mesh); c.label.element.remove(); }
+  const changed = M.last?.changed?.memory;
+  for (let w = 0; w < words; w++) {
+    if (!cells[w]) {
+      const mesh = new THREE.Mesh(cellGeo, new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: .5, emissive: new THREE.Color('#3abff0'), emissiveIntensity: 0 }));
+      mesh.castShadow = true; scene.add(mesh);
+      const lb = label('', 'cell', new THREE.Vector3(0, 0.95, 0), mesh);
+      cells[w] = { mesh, label: lb };
+    }
+    const c = cells[w];
+    const x = MEM_X - ((Math.min(words, 4) - 1) * (CELL_W + CELL_GAP)) / 2 + (w % 4) * (CELL_W + CELL_GAP);
+    c.mesh.position.set(x, 0.57 + Math.floor(w / 4) * 1.1, MEM_Z);
+    const bytes = M.memory.slice(w * 32, w * 32 + 32);
+    c.label.element.innerHTML = `<small>[${toHex(BigInt(w * 32), 2)}]</small>${wordLabel(bytes)}`;
+    const hit = changed && w * 32 < changed[0] + changed[1] && (w + 1) * 32 > changed[0];
+    if (hit && !instant) c.flash = now;
+  }
+  memEmpty.visible = !words;
+
+  // ---- storage
+  const keys = [...M.storage.keys()];
+  for (const [kk, v] of vaults) if (!M.storage.has(kk)) {
+    v.mesh.material.color.set('#cc4b37'); v.dying = now; v.label.element.style.opacity = 0; vaults.delete(kk);
+    effects.push({ t0: now, update(t) { const q = (t - this.t0) / .8; v.mesh.scale.y = Math.max(.01, 1 - q); v.mesh.position.y = 0.12 + v.mesh.scale.y * 0.7; if (q >= 1) { scene.remove(v.mesh); return true; } } });
+  }
+  keys.forEach((kk, i) => {
+    let v = vaults.get(kk);
+    if (!v) {
+      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.75, 1.4, 48), new THREE.MeshStandardMaterial({ color: '#218474', roughness: .4, emissive: new THREE.Color('#89e9d7'), emissiveIntensity: 0 }));
+      mesh.castShadow = true; mesh.position.set(STO_X + (i - (keys.length - 1) / 2) * 1.8, 0.82, 0); scene.add(mesh);
+      if (!instant) { mesh.scale.y = 0.01; effects.push({ t0: now, update(t) { const q = Math.min(1, (t - this.t0) / .6); mesh.scale.y = Math.max(.01, q); mesh.position.y = 0.12 + q * 0.7; return q >= 1; } }); }
+      const lb = label('', 'cell', new THREE.Vector3(0, 1.15, 0), mesh);
+      v = { mesh, label: lb }; vaults.set(kk, v);
+    }
+    const val = M.storage.get(kk);
+    v.label.element.innerHTML = `<small>slot ${kk}</small>${toHex(val)} = ${val}`;
+    if (M.last?.changed?.storage === kk && !instant) v.flash = now;
+  });
+  stoEmpty.visible = !keys.length;
+}
+
+function tick(t) {
+  const dt = Math.min(0.1, (t - (tick.last || t)) / 1000); tick.last = t; now += dt;
+  if (running) { tick.acc = (tick.acc || 0) + dt; if (tick.acc >= 1 / +ui.speed.value) { tick.acc = 0; doStep(); } }
+  for (let i = slabs.length - 1; i >= 0; i--) {
+    const s = slabs[i];
+    if (s.dying) {
+      const q = (now - s.dying) / .45;
+      s.mesh.position.y += dt * 6; s.mesh.material.opacity = Math.max(0, 1 - q);
+      if (q >= 1) { scene.remove(s.mesh); s.label.element.remove(); slabs.splice(i, 1); }
+    } else s.mesh.position.y += (s.targetY - s.mesh.position.y) * Math.min(1, dt * 12);
+  }
+  cells.forEach(c => { const q = c.flash ? (now - c.flash) / .9 : 1; c.mesh.material.emissiveIntensity = Math.max(0, .8 * (1 - q)); });
+  vaults.forEach(v => { const q = v.flash ? (now - v.flash) / 1.2 : 1; v.mesh.material.emissiveIntensity = Math.max(0, .9 * (1 - q)); });
+  for (let i = effects.length - 1; i >= 0; i--) if (effects[i].update(now)) effects.splice(i, 1);
+  if (renderer) { controls.update(); renderer.render(scene, camera); labelRenderer.render(scene, camera); }
+  requestAnimationFrame(tick);
+}
+
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+  // Fit the whole width (stack, memory and storage, about 22 units) in view.
+  const halfW = 8.6, tanH = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const dist = Math.max(15, halfW / (tanH * camera.aspect) + 3);
+  camera.position.copy(TARGET).add(CAM.clone().sub(TARGET).normalize().multiplyScalar(dist));
+  if (renderer) renderer.setSize(w, h);
+  labelRenderer.setSize(w, h);
+}
+new ResizeObserver(resize).observe(stage);
+
+// ===================================================================== Wiring
+function clearScene() {
+  slabs.forEach(s => { scene.remove(s.mesh); s.label.element.remove(); }); slabs = [];
+  cells.forEach(c => { scene.remove(c.mesh); c.label.element.remove(); }); cells = [];
+  vaults.forEach(v => { scene.remove(v.mesh); v.label.element.remove(); }); vaults.clear();
+}
+ui.preset.addEventListener('change', () => {
+  const u = new URL(location); u.searchParams.set('preset', ui.preset.value); window.history.replaceState(null, '', u);
+  clearScene(); load(true);
+});
+ui.step.addEventListener('click', () => { setRunning(false); doStep(); });
+ui.back.addEventListener('click', doBack);
+ui.run.addEventListener('click', () => setRunning(!running));
+ui.reset.addEventListener('click', () => { clearScene(); load(false); });
+ui.value.addEventListener('change', () => { clearScene(); load(false); });
+ui.gaslimit.addEventListener('change', () => { clearScene(); load(false); });
+$('about-link').addEventListener('click', e => { e.preventDefault(); const d = document.querySelector('#about details'); d.open = true; d.scrollIntoView({ behavior: 'smooth' }); });
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea')) return;
+  if (e.key === 'ArrowRight') { e.preventDefault(); setRunning(false); doStep(); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); doBack(); }
+  if (e.code === 'Space') { e.preventDefault(); if (!M.halted) setRunning(!running); }
+});
+
+load(true);
+resize();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
